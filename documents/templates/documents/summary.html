@@ -1,0 +1,87 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+    <title>AI Summary - DocuMind AI</title>
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: #f4f6fb;
+            margin: 0;
+            color: #26345c;
+        }
+
+        header {
+            background: #26345c;
+            color: white;
+            padding: 25px;
+            text-align: center;
+        }
+
+        .container {
+            width: 85%;
+            max-width: 900px;
+            margin: 35px auto;
+        }
+
+        .summary-box {
+            background: white;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 3px 12px rgba(0,0,0,0.06);
+        }
+
+        pre {
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+            font-family: Arial, sans-serif;
+            line-height: 1.8;
+            color: #444;
+        }
+
+        a {
+            display: inline-block;
+            margin-top: 20px;
+            color: #40558e;
+            text-decoration: none;
+            font-weight: bold;
+        }
+    </style>
+</head>
+
+<body>
+
+<header>
+    <h1>DocuMind AI</h1>
+    <p>Document Summary</p>
+</header>
+
+<div class="container">
+
+    <div class="summary-box">
+
+        <h2>{{ document.title }}</h2>
+
+        <h3>AI Generated Summary</h3>
+        <a href="{% url 'download_summary' document.id %}">
+    Download Summary as PDF
+</a>
+
+
+        {% if document.summary_text %}
+            <pre>{{ document.summary_text }}</pre>
+        {% else %}
+            <p>No AI summary available for this document.</p>
+        {% endif %}
+
+        <a href="{% url 'home' %}#documents">
+            ← Back to Dashboard
+        </a>
+
+    </div>
+
+</div>
+
+</body>
+</html>
