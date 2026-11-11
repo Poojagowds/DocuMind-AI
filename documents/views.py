@@ -12,14 +12,15 @@ import requests
 from reportlab.pdfgen import canvas
 from io import BytesIO
 
+import os
+from google import genai
+
 
 # --------------------------------
 # 1. AI PDF SUMMARY
 # --------------------------------
 
 def generate_summary(text):
-
-    url = "http://localhost:11434/api/generate"
 
     prompt = f"""
     You are a professional document summarisation assistant.
@@ -38,49 +39,69 @@ def generate_summary(text):
     {text}
     """
 
-    data = {
-        "model": "llama3.2:3b",
-        "prompt": prompt,
-        "stream": False
-    }
+    # Use Gemini on Render
+    if os.getenv("GEMINI_API_KEY"):
 
-    try:
-        print("Starting AI summary...", flush=True)
+        try:
+            client = genai.Client(
+                api_key=os.getenv("GEMINI_API_KEY")
+            )
 
-        response = requests.post(
-            url,
-            json=data,
-            timeout=300
-        )
+            print("Starting Gemini summary...", flush=True)
 
-        response.raise_for_status()
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=prompt
+            )
 
-        result = response.json()
+            summary = (response.text or "").strip()
 
-        summary = result.get("response", "").strip()
+            if not summary:
+                return "Gemini returned an empty response."
 
-        if not summary:
-            return "AI service returned an empty response."
+            print("Gemini summary completed!", flush=True)
 
-        print("AI summary completed!", flush=True)
+            return summary
 
-        return summary
+        except Exception as error:
+            print("Gemini summary error:", error, flush=True)
+            return "Unable to generate summary using Gemini."
 
-    except requests.exceptions.Timeout:
-        print("AI summary timed out.", flush=True)
-        return "AI summary timed out. Please try again."
+    # Use Ollama locally
+    else:
 
-    except requests.exceptions.ConnectionError:
-        print("Ollama connection failed.", flush=True)
-        return "Ollama is not running. Please start Ollama."
+        url = "http://localhost:11434/api/generate"
 
-    except requests.exceptions.RequestException as error:
-        print("AI summary error:", error, flush=True)
-        return "Unable to generate summary due to an AI service error."
+        data = {
+            "model": "llama3.2:3b",
+            "prompt": prompt,
+            "stream": False
+        }
 
-    except (ValueError, KeyError) as error:
-        print("Invalid AI response:", error, flush=True)
-        return "AI service returned an invalid response."
+        try:
+            print("Starting Ollama summary...", flush=True)
+
+            response = requests.post(
+                url,
+                json=data,
+                timeout=300
+            )
+
+            response.raise_for_status()
+
+            summary = response.json().get("response", "").strip()
+
+            if not summary:
+                return "AI service returned an empty response."
+
+            print("Ollama summary completed!", flush=True)
+
+            return summary
+
+        except requests.exceptions.RequestException as error:
+            print("Ollama error:", error, flush=True)
+            return "Unable to generate summary. Please check Ollama."
+
 
 
 # --------------------------------
