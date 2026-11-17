@@ -3,6 +3,8 @@ import chromadb
 import requests
 from django.conf import settings
 from pathlib import Path
+from google import genai
+import os
 
 
 # --------------------------------
@@ -12,36 +14,38 @@ from pathlib import Path
 def get_embedding(text):
 
     try:
-        response = requests.post(
-            "http://localhost:11434/api/embeddings",
-            json={
-                "model": "nomic-embed-text",
-                "prompt": text
-            },
-            timeout=120
-        )
 
-        response.raise_for_status()
+        if settings.IS_RENDER:
 
-        embedding = response.json().get("embedding")
+            client = genai.Client(
+                api_key=os.getenv("GEMINI_API_KEY")
+            )
 
-        if not embedding:
-            raise ValueError("Ollama returned an empty embedding.")
+            response = client.models.embed_content(
+                model="gemini-embedding-001",
+                contents=text
+            )
 
-        print(
-            "Ollama embedding generated successfully!",
-            flush=True
-        )
+            return response.embeddings[0].values
 
-        return embedding
+        else:
+
+            response = requests.post(
+                "http://localhost:11434/api/embeddings",
+                json={
+                    "model": "nomic-embed-text",
+                    "prompt": text
+                },
+                timeout=120
+            )
+
+            response.raise_for_status()
+
+            return response.json()["embedding"]
 
     except Exception as error:
 
-        print(
-            "OLLAMA EMBEDDING ERROR:",
-            repr(error),
-            flush=True
-        )
+        print("EMBEDDING ERROR:", repr(error), flush=True)
 
         return None
 
@@ -57,7 +61,7 @@ client = chromadb.PersistentClient(
 )
 
 collection = client.get_or_create_collection(
-    name="pdf_documents_ollama"
+    name="pdf_documents_gemini" if settings.IS_RENDER else "pdf_documents_ollama"
 )
 
 

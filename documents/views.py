@@ -66,6 +66,8 @@ def generate_summary(text):
         except Exception as error:
             print("Gemini summary error:", error, flush=True)
             print("Gemini failed. Trying Ollama fallback...", flush=True)
+            if os.getenv("RENDER", "False").lower() == "true":
+                return "Gemini is temporarily unavailable. Please try again later."
 
     # Use Ollama locally
     if True:
@@ -198,22 +200,38 @@ Answer:
 """
 
     try:
-        response = requests.post(
-            "http://localhost:11434/api/generate",
-            json={
-                "model": "llama3.2:3b",
-                "prompt": prompt,
-                "stream": False
-            },
-            timeout=300
-        )
 
-        response.raise_for_status()
+        if os.getenv("RENDER", "False").lower() == "true":
 
-        ai_answer = response.json().get("response", "").strip()
+            client = genai.Client(
+                api_key=os.getenv("GEMINI_API_KEY")
+            )
+
+            response = client.models.generate_content(
+                model="gemini-3.8-flash",
+                contents=prompt
+            )
+
+            ai_answer = (response.text or "").strip()
+
+        else:
+
+            response = requests.post(
+                "http://localhost:11434/api/generate",
+                json={
+                    "model": "llama3.2:3b",
+                    "prompt": prompt,
+                    "stream": False
+                },
+                timeout=300
+            )
+
+            response.raise_for_status()
+
+            ai_answer = response.json().get("response", "").strip()
 
         if not ai_answer:
-            return "Ollama returned an empty response."
+            return "AI service returned an empty response."
 
         source_pages = sorted(set(
             chunk["page_number"]
@@ -230,9 +248,8 @@ Answer:
         )
 
     except Exception as error:
-        print("Ollama answer error:", repr(error), flush=True)
-        return "Unable to generate an answer. Please check Ollama."
-
+        print("AI answer error:", repr(error), flush=True)
+        return "Unable to generate an answer. Please try again."
 # --------------------------------
 # 4. DASHBOARD AND PDF UPLOAD
 # --------------------------------

@@ -29,8 +29,9 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 SECRET_KEY = os.getenv("SECRET_KEY")
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = os.getenv('DEBUG', 'True').lower() == 'true'
+IS_RENDER = os.getenv("RENDER", "False").lower() == "true"
 
+DEBUG = os.getenv('DEBUG', 'True').lower() == 'true' and not IS_RENDER
 ALLOWED_HOSTS = os.getenv(
     'ALLOWED_HOSTS',
     '127.0.0.1,localhost'
