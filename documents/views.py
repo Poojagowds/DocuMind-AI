@@ -65,10 +65,10 @@ def generate_summary(text):
 
         except Exception as error:
             print("Gemini summary error:", error, flush=True)
-            return "Unable to generate summary using Gemini."
+            print("Gemini failed. Trying Ollama fallback...", flush=True)
 
     # Use Ollama locally
-    else:
+    if True:
 
         url = "http://localhost:11434/api/generate"
 
@@ -166,9 +166,8 @@ def extract_pdf_pages(pdf_path):
 # 3. AI ANSWER USING RAG
 # --------------------------------
 
-def generate_answer(relevant_chunks, question):
 
-    url = "http://localhost:11434/api/generate"
+def generate_answer(relevant_chunks, question):
 
     if not relevant_chunks:
         return "I could not find relevant information in this document."
@@ -176,55 +175,45 @@ def generate_answer(relevant_chunks, question):
     document_text = ""
 
     for chunk in relevant_chunks:
-
         document_text += (
             f"\n--- PDF Page {chunk['page_number']} ---\n"
         )
-
         document_text += chunk["text"]
 
     prompt = f"""
-    You are a helpful PDF assistant.
+You are a helpful PDF assistant.
 
-    Answer using only the provided PDF content.
+Answer using only the provided PDF content.
+Do not invent information.
+If the answer is unavailable, clearly say so.
+Give a clear and simple answer.
 
-    Instructions:
-    1. Give a clear and simple answer.
-    2. Do not invent information.
-    3. If the answer is unavailable, clearly say so.
-    4. Do not mention page numbers in your answer.
-    5. Do not create your own source citations.
+Document Content:
+{document_text}
 
-    Document Content:
-    {document_text}
+Question:
+{question}
 
-    Question:
-    {question}
-
-    Answer:
-    """
-
-    data = {
-        "model": "llama3.2:3b",
-        "prompt": prompt,
-        "stream": False
-    }
+Answer:
+"""
 
     try:
         response = requests.post(
-            url,
-            json=data,
+            "http://localhost:11434/api/generate",
+            json={
+                "model": "llama3.2:3b",
+                "prompt": prompt,
+                "stream": False
+            },
             timeout=300
         )
 
         response.raise_for_status()
 
-        result = response.json()
-
-        ai_answer = result.get("response", "").strip()
+        ai_answer = response.json().get("response", "").strip()
 
         if not ai_answer:
-            return "AI service returned an empty response."
+            return "Ollama returned an empty response."
 
         source_pages = sorted(set(
             chunk["page_number"]
@@ -240,25 +229,16 @@ def generate_answer(relevant_chunks, question):
             f"Source: PDF page(s) {page_references}"
         )
 
-    except requests.exceptions.Timeout:
-        return "AI response timed out. Please try again."
-
-    except requests.exceptions.ConnectionError:
-        return "Ollama is not running. Please start Ollama."
-
-    except requests.exceptions.RequestException as error:
-        print("AI answer error:", error, flush=True)
-        return "Unable to generate an answer due to an AI service error."
-
-    except (ValueError, KeyError):
-        return "AI service returned an invalid response."
-
+    except Exception as error:
+        print("Ollama answer error:", repr(error), flush=True)
+        return "Unable to generate an answer. Please check Ollama."
 
 # --------------------------------
 # 4. DASHBOARD AND PDF UPLOAD
 # --------------------------------
 
 def home(request):
+    print("HOME FUNCTION IS RUNNING", flush=True)
 
     print("HOME VIEW STARTED:", request.method, flush=True)
 

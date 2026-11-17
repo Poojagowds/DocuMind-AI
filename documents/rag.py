@@ -11,41 +11,43 @@ from pathlib import Path
 
 def get_embedding(text):
 
-    url = "http://localhost:11434/api/embeddings"
-
-    data = {
-        "model": "nomic-embed-text",
-        "prompt": text
-    }
-
     try:
         response = requests.post(
-            url,
-            json=data,
+            "http://localhost:11434/api/embeddings",
+            json={
+                "model": "nomic-embed-text",
+                "prompt": text
+            },
             timeout=120
         )
 
         response.raise_for_status()
 
-        result = response.json()
+        embedding = response.json().get("embedding")
 
-        return result["embedding"]
+        if not embedding:
+            raise ValueError("Ollama returned an empty embedding.")
 
-    except requests.exceptions.Timeout:
-        print("Embedding timed out!", flush=True)
-        return None
+        print(
+            "Ollama embedding generated successfully!",
+            flush=True
+        )
 
-    except requests.exceptions.RequestException as error:
-        print("Embedding error:", error, flush=True)
-        return None
+        return embedding
 
-    except (ValueError, KeyError) as error:
-        print("Invalid embedding response:", error, flush=True)
+    except Exception as error:
+
+        print(
+            "OLLAMA EMBEDDING ERROR:",
+            repr(error),
+            flush=True
+        )
+
         return None
 
 
 # --------------------------------
-# 2. Create Permanent ChromaDB
+# 2. Create Persistent ChromaDB
 # --------------------------------
 
 CHROMA_PATH = Path(settings.BASE_DIR) / "chroma_db"
@@ -55,7 +57,7 @@ client = chromadb.PersistentClient(
 )
 
 collection = client.get_or_create_collection(
-    name="pdf_documents"
+    name="pdf_documents_ollama"
 )
 
 
@@ -63,7 +65,11 @@ collection = client.get_or_create_collection(
 # 3. Split Text into Chunks
 # --------------------------------
 
-def split_text_into_chunks(text, chunk_size=800, overlap=100):
+def split_text_into_chunks(
+    text,
+    chunk_size=800,
+    overlap=100
+):
 
     chunks = []
 
@@ -91,9 +97,11 @@ def store_pdf_chunks(document_id, pages):
 
     print("Starting PDF indexing...", flush=True)
 
-    # Remove previously stored chunks
+    # Remove old chunks for this document
     collection.delete(
-        where={"document_id": str(document_id)}
+        where={
+            "document_id": str(document_id)
+        }
     )
 
     ids = []
@@ -101,16 +109,10 @@ def store_pdf_chunks(document_id, pages):
     embeddings = []
     metadatas = []
 
-    total_chunks = sum(
-        len(split_text_into_chunks(page["text"]))
-        for page in pages
-    )
-
-    print("Total chunks:", total_chunks, flush=True)
-
     for page in pages:
 
         page_number = page["page_number"]
+
         text = page["text"]
 
         chunks = split_text_into_chunks(text)
@@ -126,12 +128,10 @@ def store_pdf_chunks(document_id, pages):
             embedding = get_embedding(chunk)
 
             if embedding is None:
-                raise ValueError(
-                    "Could not generate PDF embedding. "
-                    "Check whether Ollama is running."
-                )
 
-            print("Embedding completed!", flush=True)
+                raise ValueError(
+                    "Could not generate PDF embedding using Ollama."
+                )
 
             ids.append(
                 f"doc_{document_id}_page_{page_number}_chunk_{chunk_index}"
@@ -149,10 +149,7 @@ def store_pdf_chunks(document_id, pages):
 
     if ids:
 
-        print(
-            "All embeddings generated. Saving to ChromaDB...",
-            flush=True
-        )
+        print("Saving embeddings to ChromaDB...", flush=True)
 
         collection.add(
             ids=ids,
@@ -161,7 +158,11 @@ def store_pdf_chunks(document_id, pages):
             metadatas=metadatas
         )
 
-    print("PDF indexing completed!", flush=True)
+    print(
+        "PDF indexing completed. Total chunks:",
+        len(ids),
+        flush=True
+    )
 
     return len(ids)
 
@@ -177,8 +178,9 @@ def search_pdf(document_id, question):
     question_embedding = get_embedding(question)
 
     if question_embedding is None:
+
         raise ValueError(
-            "Could not generate question embedding."
+            "Could not generate question embedding using Ollama."
         )
 
     print("Searching ChromaDB...", flush=True)
@@ -186,12 +188,14 @@ def search_pdf(document_id, question):
     results = collection.query(
         query_embeddings=[question_embedding],
         n_results=5,
-        where={"document_id": str(document_id)}
+        where={
+            "document_id": str(document_id)
+        }
     )
 
     relevant_chunks = []
 
-    if results["documents"]:
+    if results["documents"] and results["documents"][0]:
 
         for text, metadata in zip(
             results["documents"][0],
