@@ -8,12 +8,25 @@ from .rag import store_pdf_chunks, search_pdf, is_pdf_indexed
 
 import fitz
 import requests
+import os
 
+from google import genai
 from reportlab.pdfgen import canvas
 from io import BytesIO
 
-import os
-from google import genai
+
+# --------------------------------
+# GEMINI CLIENT
+# --------------------------------
+
+def get_gemini_client():
+
+    api_key = os.getenv("GEMINI_API_KEY")
+
+    if not api_key:
+        raise ValueError("GEMINI_API_KEY is missing.")
+
+    return genai.Client(api_key=api_key)
 
 
 # --------------------------------
@@ -23,87 +36,76 @@ from google import genai
 def generate_summary(text):
 
     prompt = f"""
-    You are a professional document summarisation assistant.
+You are a professional document summarisation assistant.
 
-    Analyse the following document and provide:
+Analyse the following document and provide:
 
-    1. Main Topic
-    2. Short Overview
-    3. Important Points
-    4. Key Information
-    5. Conclusion
+1. Main Topic
+2. Short Overview
+3. Important Points
+4. Key Information
+5. Conclusion
 
-    Use simple English and clear bullet points.
+Use simple English and clear bullet points.
 
-    Document:
-    {text}
-    """
+Document:
+{text}
+"""
 
-    # Use Gemini on Render
-    if os.getenv("GEMINI_API_KEY"):
+    if os.getenv("RENDER", "False").lower() == "true":
 
         try:
-            client = genai.Client(
-                api_key=os.getenv("GEMINI_API_KEY")
-            )
+            client = get_gemini_client()
 
             print("Starting Gemini summary...", flush=True)
 
             response = client.models.generate_content(
-                model="gemini-3.8-flash",
+                model="gemini-2.5-flash",
                 contents=prompt
             )
 
             summary = (response.text or "").strip()
 
             if not summary:
-                return "Gemini returned an empty response."
+                return "AI service returned an empty response."
 
             print("Gemini summary completed!", flush=True)
 
             return summary
 
         except Exception as error:
-            print("Gemini summary error:", error, flush=True)
-            print("Gemini failed. Trying Ollama fallback...", flush=True)
-            if os.getenv("RENDER", "False").lower() == "true":
-                return "Gemini is temporarily unavailable. Please try again later."
+            print("Gemini summary error:", repr(error), flush=True)
 
-    # Use Ollama locally
-    if True:
+            return "Gemini is temporarily unavailable. Please try again later."
 
-        url = "http://localhost:11434/api/generate"
+    # Local Ollama
 
-        data = {
-            "model": "llama3.2:3b",
-            "prompt": prompt,
-            "stream": False
-        }
+    try:
 
-        try:
-            print("Starting Ollama summary...", flush=True)
+        response = requests.post(
+            "http://localhost:11434/api/generate",
+            json={
+                "model": "llama3.2:3b",
+                "prompt": prompt,
+                "stream": False
+            },
+            timeout=300
+        )
 
-            response = requests.post(
-                url,
-                json=data,
-                timeout=300
-            )
+        response.raise_for_status()
 
-            response.raise_for_status()
+        summary = response.json().get("response", "").strip()
 
-            summary = response.json().get("response", "").strip()
+        if not summary:
+            return "AI service returned an empty response."
 
-            if not summary:
-                return "AI service returned an empty response."
+        return summary
 
-            print("Ollama summary completed!", flush=True)
+    except requests.exceptions.RequestException as error:
 
-            return summary
+        print("Ollama summary error:", repr(error), flush=True)
 
-        except requests.exceptions.RequestException as error:
-            print("Ollama error:", error, flush=True)
-            return "Unable to generate summary. Please check Ollama."
-
+        return "Unable to generate summary. Please check Ollama."
 
 
 # --------------------------------
@@ -116,6 +118,7 @@ def extract_pdf_pages(pdf_path):
     pdf = None
 
     try:
+
         print("Opening PDF...", flush=True)
 
         pdf = fitz.open(pdf_path)
@@ -136,6 +139,7 @@ def extract_pdf_pages(pdf_path):
             page_text = page.get_text().strip()
 
             if page_text:
+
                 pages.append({
                     "page_number": page_number,
                     "text": page_text
@@ -153,10 +157,12 @@ def extract_pdf_pages(pdf_path):
         )
 
     finally:
+
         if pdf is not None:
             pdf.close()
 
     if not pages:
+
         raise ValueError(
             "No readable text found. This PDF may contain scanned images."
         )
@@ -168,18 +174,20 @@ def extract_pdf_pages(pdf_path):
 # 3. AI ANSWER USING RAG
 # --------------------------------
 
-
 def generate_answer(relevant_chunks, question):
 
     if not relevant_chunks:
+
         return "I could not find relevant information in this document."
 
     document_text = ""
 
     for chunk in relevant_chunks:
+
         document_text += (
             f"\n--- PDF Page {chunk['page_number']} ---\n"
         )
+
         document_text += chunk["text"]
 
     prompt = f"""
@@ -203,18 +211,20 @@ Answer:
 
         if os.getenv("RENDER", "False").lower() == "true":
 
-            client = genai.Client(
-                api_key=os.getenv("GEMINI_API_KEY")
-            )
+            client = get_gemini_client()
+
+            print("Generating Gemini answer...", flush=True)
 
             response = client.models.generate_content(
-                model="gemini-3.8-flash",
+                model="gemini-2.5-flash",
                 contents=prompt
             )
 
             ai_answer = (response.text or "").strip()
 
         else:
+
+            print("Generating local Ollama answer...", flush=True)
 
             response = requests.post(
                 "http://localhost:11434/api/generate",
@@ -228,9 +238,12 @@ Answer:
 
             response.raise_for_status()
 
-            ai_answer = response.json().get("response", "").strip()
+            ai_answer = response.json().get(
+                "response", ""
+            ).strip()
 
         if not ai_answer:
+
             return "AI service returned an empty response."
 
         source_pages = sorted(set(
@@ -248,24 +261,28 @@ Answer:
         )
 
     except Exception as error:
+
         print("AI answer error:", repr(error), flush=True)
-        return "Unable to generate an answer. Please try again."
+
+        return (
+            "Unable to generate an answer right now. "
+            "Please try again later."
+        )
+
+
 # --------------------------------
 # 4. DASHBOARD AND PDF UPLOAD
 # --------------------------------
 
 def home(request):
-    print("HOME FUNCTION IS RUNNING", flush=True)
 
-    print("HOME VIEW STARTED:", request.method, flush=True)
+    print("HOME FUNCTION IS RUNNING", flush=True)
 
     extracted_text = ""
     summary = ""
     upload_error = ""
 
     if request.method == "POST":
-
-        print("UPLOAD REQUEST RECEIVED", flush=True)
 
         uploaded_file = request.FILES.get("pdf_file")
 
@@ -302,7 +319,8 @@ def home(request):
 
                     extracted_text += page["text"]
 
-                # Generate summary first
+                # Generate summary
+
                 summary = generate_summary(extracted_text)
 
                 print(
@@ -316,6 +334,7 @@ def home(request):
                     "Ollama is not running",
                     "Unable to generate summary",
                     "AI service returned",
+                    "Gemini is temporarily unavailable",
                 )
 
                 if summary and not summary.startswith(summary_errors):
@@ -334,7 +353,8 @@ def home(request):
 
                     upload_error = summary
 
-                # Index PDF only ONCE
+                # Index PDF in ChromaDB
+
                 print("Starting PDF indexing...", flush=True)
 
                 count = store_pdf_chunks(
@@ -348,28 +368,15 @@ def home(request):
                     flush=True
                 )
 
-                # Redirect after successful upload processing
                 return redirect("home")
 
             except ValueError as error:
 
                 upload_error = str(error)
 
-                print("PDF upload error:", error, flush=True)
-
-                file_name = document.pdf_file.name
-                file_storage = document.pdf_file.storage
+                print("PDF upload error:", repr(error), flush=True)
 
                 document.delete()
-
-                try:
-                    file_storage.delete(file_name)
-
-                except PermissionError:
-                    print(
-                        "File is locked. Delete it manually later.",
-                        flush=True
-                    )
 
             except Exception as error:
 
@@ -384,9 +391,7 @@ def home(request):
                     "Please check the terminal for details."
                 )
 
-    # --------------------------------
-    # 5. DASHBOARD DOCUMENTS AND FILTERS
-    # --------------------------------
+    # Dashboard documents
 
     all_documents = PDFDocument.objects.all().order_by(
         "-uploaded_at"
@@ -405,6 +410,7 @@ def home(request):
     documents = all_documents
 
     if search_query:
+
         documents = documents.filter(
             title__icontains=search_query
         )
@@ -440,7 +446,7 @@ def home(request):
 
 
 # --------------------------------
-# 6. VIEW SAVED SUMMARY
+# 5. VIEW SAVED SUMMARY
 # --------------------------------
 
 def view_summary(request, document_id):
@@ -460,7 +466,7 @@ def view_summary(request, document_id):
 
 
 # --------------------------------
-# 7. CHAT WITH PDF
+# 6. CHAT WITH PDF
 # --------------------------------
 
 def chat_with_pdf(request, document_id):
@@ -497,6 +503,7 @@ def chat_with_pdf(request, document_id):
                     )
 
                     if count == 0:
+
                         raise ValueError(
                             "No PDF chunks were created."
                         )
@@ -513,11 +520,15 @@ def chat_with_pdf(request, document_id):
 
             except Exception as error:
 
-                print("RAG error:", repr(error), flush=True)
+                print(
+                    "RAG error:",
+                    repr(error),
+                    flush=True
+                )
 
                 answer = (
                     "Unable to process your question. "
-                    "Please check that Ollama and ChromaDB are working."
+                    "Please check the server logs."
                 )
 
             ChatMessage.objects.create(
@@ -541,7 +552,7 @@ def chat_with_pdf(request, document_id):
 
 
 # --------------------------------
-# 8. DOWNLOAD SUMMARY AS PDF
+# 7. DOWNLOAD SUMMARY AS PDF
 # --------------------------------
 
 def download_summary(request, document_id):
@@ -600,7 +611,7 @@ def download_summary(request, document_id):
 
 
 # --------------------------------
-# 9. DELETE DOCUMENT
+# 8. DELETE DOCUMENT
 # --------------------------------
 
 @require_POST
@@ -616,12 +627,18 @@ def delete_document(request, document_id):
         from .rag import collection
 
         collection.delete(
-            where={"document_id": str(document.id)}
+            where={
+                "document_id": str(document.id)
+            }
         )
 
     except Exception as error:
 
-        print("ChromaDB deletion error:", error, flush=True)
+        print(
+            "ChromaDB deletion error:",
+            repr(error),
+            flush=True
+        )
 
     document.pdf_file.delete(save=False)
 
@@ -631,7 +648,7 @@ def delete_document(request, document_id):
 
 
 # --------------------------------
-# 10. OPEN SELECTED PDF CHAT
+# 9. OPEN SELECTED PDF CHAT
 # --------------------------------
 
 def open_selected_chat(request):
@@ -651,7 +668,7 @@ def open_selected_chat(request):
 
 
 # --------------------------------
-# 11. CLEAR CHAT HISTORY
+# 10. CLEAR CHAT HISTORY
 # --------------------------------
 
 @require_POST
