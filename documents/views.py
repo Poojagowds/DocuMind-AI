@@ -112,7 +112,7 @@ Document:
 # 2. EXTRACT PDF PAGES
 # --------------------------------
 
-def extract_pdf_pages(pdf_path):
+def extract_pdf_pages(pdf_file):
 
     pages = []
     pdf = None
@@ -121,7 +121,19 @@ def extract_pdf_pages(pdf_path):
 
         print("Opening PDF...", flush=True)
 
-        pdf = fitz.open(pdf_path)
+        # Read PDF from local storage or Cloudinary
+        pdf_file.open("rb")
+
+        try:
+            pdf_bytes = pdf_file.read()
+        finally:
+            pdf_file.close()
+
+        # Open PDF from memory instead of using .path
+        pdf = fitz.open(
+            stream=pdf_bytes,
+            filetype="pdf"
+        )
 
         print("PDF opened successfully!", flush=True)
         print("Number of pages:", pdf.page_count, flush=True)
@@ -153,7 +165,7 @@ def extract_pdf_pages(pdf_path):
         print("PDF extraction error:", repr(error), flush=True)
 
         raise ValueError(
-            "Invalid or corrupted PDF. Please upload a valid PDF."
+            "Unable to read PDF. Please upload a valid PDF."
         )
 
     finally:
@@ -307,8 +319,9 @@ def home(request):
 
                 print("PDF saved. Extracting text...", flush=True)
 
+                # Pass the storage file object, not .path
                 pages = extract_pdf_pages(
-                    document.pdf_file.path
+                    document.pdf_file
                 )
 
                 for page in pages:
@@ -388,7 +401,7 @@ def home(request):
 
                 upload_error = (
                     "PDF was uploaded, but processing failed. "
-                    "Please check the terminal for details."
+                    "Please check the server logs for details."
                 )
 
     # Dashboard documents
@@ -493,8 +506,9 @@ def chat_with_pdf(request, document_id):
                         flush=True
                     )
 
+                    # Pass storage file object, not .path
                     pages = extract_pdf_pages(
-                        document.pdf_file.path
+                        document.pdf_file
                     )
 
                     count = store_pdf_chunks(
