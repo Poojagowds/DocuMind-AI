@@ -14,6 +14,8 @@ from .rag import (
 import fitz
 import requests
 import os
+import time
+
 from google import genai
 from reportlab.pdfgen import canvas
 from io import BytesIO
@@ -34,15 +36,85 @@ def get_gemini_client():
 
 
 # --------------------------------
+# GEMINI GENERATION WITH RETRIES
+# --------------------------------
+
+def generate_gemini_content(prompt):
+
+    client = get_gemini_client()
+
+    max_attempts = 4
+
+    for attempt in range(max_attempts):
+
+        try:
+
+            print(
+                f"Gemini request attempt "
+                f"{attempt + 1}/{max_attempts}",
+                flush=True
+            )
+
+            response = client.models.generate_content(
+                model="gemini-3.8-flash",
+                contents=prompt
+            )
+
+            return response
+
+        except Exception as error:
+
+            error_code = getattr(error, "code", None)
+
+            retryable = (
+                error_code in (429, 500, 502, 503, 504)
+                or any(
+                    code in str(error)
+                    for code in (
+                        "429",
+                        "500",
+                        "502",
+                        "503",
+                        "504"
+                    )
+                )
+            )
+
+            if not retryable or attempt == max_attempts - 1:
+
+                print(
+                    "Gemini request failed:",
+                    repr(error),
+                    flush=True
+                )
+
+                raise
+
+            delay = 2 ** (attempt + 1)
+
+            print(
+                f"Gemini temporarily unavailable. "
+                f"Retrying in {delay} seconds...",
+                flush=True
+            )
+
+            time.sleep(delay)
+
+    raise RuntimeError(
+        "Gemini request failed after retries."
+    )
+
+
+# --------------------------------
 # 1. AI PDF SUMMARY
 # --------------------------------
 
 def generate_summary(text):
 
     if not text or not text.strip():
+
         return "No readable text was found in the PDF."
 
-    # Split document text into manageable sections.
     sections = [
         text[i:i + 6000]
         for i in range(0, len(text), 6000)
@@ -53,8 +125,6 @@ def generate_summary(text):
     try:
 
         if os.getenv("RENDER", "False").lower() == "true":
-
-            client = get_gemini_client()
 
             for index, section in enumerate(sections):
 
@@ -78,14 +148,14 @@ Document section:
 {section}
 """
 
-                response = client.models.generate_content(
-                    model="gemini-3.8-flash",
-                    contents=prompt
-                )
+                response = generate_gemini_content(prompt)
 
-                result = (response.text or "").strip()
+                result = (
+                    response.text or ""
+                ).strip()
 
                 if not result:
+
                     raise ValueError(
                         "Gemini returned an empty summary."
                     )
@@ -93,6 +163,12 @@ Document section:
                 partial_summaries.append(result)
 
             if len(partial_summaries) == 1:
+
+                print(
+                    "Gemini summary completed!",
+                    flush=True
+                )
+
                 return partial_summaries[0]
 
             final_prompt = f"""
@@ -112,23 +188,29 @@ Section summaries:
 {chr(10).join(partial_summaries)}
 """
 
-            final_response = client.models.generate_content(
-                model="gemini-3.8-flash",
-                contents=final_prompt
+            final_response = generate_gemini_content(
+                final_prompt
             )
 
-            summary = (final_response.text or "").strip()
+            summary = (
+                final_response.text or ""
+            ).strip()
 
             if not summary:
+
                 raise ValueError(
                     "Gemini returned an empty final summary."
                 )
 
-            print("Gemini summary completed!", flush=True)
+            print(
+                "Gemini summary completed!",
+                flush=True
+            )
 
             return summary
 
         # Local Ollama summary
+
         for section in sections:
 
             prompt = f"""
@@ -151,11 +233,12 @@ Document:
 
             response.raise_for_status()
 
-            result = response.json().get(
-                "response", ""
+            result = (
+                response.json().get("response", "")
             ).strip()
 
             if not result:
+
                 raise ValueError(
                     "Ollama returned an empty summary."
                 )
@@ -173,12 +256,16 @@ Document:
         )
 
         if os.getenv("RENDER", "False").lower() == "true":
+
             return (
                 "Gemini is temporarily unavailable. "
                 "Please try again later."
             )
 
-        return "Unable to generate summary. Please check Ollama."
+        return (
+            "Unable to generate summary. "
+            "Please check Ollama."
+        )
 
 
 # --------------------------------
@@ -192,32 +279,48 @@ def extract_pdf_pages(pdf_file):
 
     try:
 
-        print("Opening PDF...", flush=True)
+        print(
+            "Opening PDF...",
+            flush=True
+        )
 
-        # Read PDF from local storage or Cloudinary
         pdf_file.open("rb")
 
         try:
+
             pdf_bytes = pdf_file.read()
+
         finally:
+
             pdf_file.close()
 
-        # Open PDF from memory instead of using .path
         pdf = fitz.open(
             stream=pdf_bytes,
             filetype="pdf"
         )
 
-        print("PDF opened successfully!", flush=True)
-        print("Number of pages:", pdf.page_count, flush=True)
+        print(
+            "PDF opened successfully!",
+            flush=True
+        )
+
+        print(
+            "Number of pages:",
+            pdf.page_count,
+            flush=True
+        )
 
         if pdf.is_encrypted:
+
             raise ValueError(
                 "Password-protected PDFs are not supported."
             )
 
         if pdf.page_count == 0:
-            raise ValueError("This PDF has no pages.")
+
+            raise ValueError(
+                "This PDF has no pages."
+            )
 
         for page_number, page in enumerate(pdf, start=1):
 
@@ -231,11 +334,16 @@ def extract_pdf_pages(pdf_file):
                 })
 
     except ValueError:
+
         raise
 
     except Exception as error:
 
-        print("PDF extraction error:", repr(error), flush=True)
+        print(
+            "PDF extraction error:",
+            repr(error),
+            flush=True
+        )
 
         raise ValueError(
             "Unable to read PDF. Please upload a valid PDF."
@@ -249,7 +357,8 @@ def extract_pdf_pages(pdf_file):
     if not pages:
 
         raise ValueError(
-            "No readable text found. This PDF may contain scanned images."
+            "No readable text found. "
+            "This PDF may contain scanned images."
         )
 
     return pages
@@ -263,7 +372,10 @@ def generate_answer(relevant_chunks, question):
 
     if not relevant_chunks:
 
-        return "I could not find relevant information in this document."
+        return (
+            "I could not find relevant information "
+            "in this document."
+        )
 
     document_text = ""
 
@@ -296,20 +408,23 @@ Answer:
 
         if os.getenv("RENDER", "False").lower() == "true":
 
-            client = get_gemini_client()
-
-            print("Generating Gemini answer...", flush=True)
-
-            response = client.models.generate_content(
-                model="gemini-3.8-flash",
-                contents=prompt
+            print(
+                "Generating Gemini answer...",
+                flush=True
             )
 
-            ai_answer = (response.text or "").strip()
+            response = generate_gemini_content(prompt)
+
+            ai_answer = (
+                response.text or ""
+            ).strip()
 
         else:
 
-            print("Generating local Ollama answer...", flush=True)
+            print(
+                "Generating local Ollama answer...",
+                flush=True
+            )
 
             response = requests.post(
                 "http://localhost:11434/api/generate",
@@ -323,13 +438,15 @@ Answer:
 
             response.raise_for_status()
 
-            ai_answer = response.json().get(
-                "response", ""
+            ai_answer = (
+                response.json().get("response", "")
             ).strip()
 
         if not ai_answer:
 
-            return "AI service returned an empty response."
+            return (
+                "AI service returned an empty response."
+            )
 
         source_pages = sorted(set(
             chunk["page_number"]
@@ -347,7 +464,11 @@ Answer:
 
     except Exception as error:
 
-        print("AI answer error:", repr(error), flush=True)
+        print(
+            "AI answer error:",
+            repr(error),
+            flush=True
+        )
 
         return (
             "Unable to generate an answer right now. "
@@ -361,7 +482,10 @@ Answer:
 
 def home(request):
 
-    print("HOME FUNCTION IS RUNNING", flush=True)
+    print(
+        "HOME FUNCTION IS RUNNING",
+        flush=True
+    )
 
     extracted_text = ""
     summary = ""
@@ -373,11 +497,15 @@ def home(request):
 
         if not uploaded_file:
 
-            upload_error = "Please select a PDF file."
+            upload_error = (
+                "Please select a PDF file."
+            )
 
         elif not uploaded_file.name.lower().endswith(".pdf"):
 
-            upload_error = "Only PDF files are allowed."
+            upload_error = (
+                "Only PDF files are allowed."
+            )
 
         else:
 
@@ -390,9 +518,11 @@ def home(request):
 
                 document.save()
 
-                print("PDF saved. Extracting text...", flush=True)
+                print(
+                    "PDF saved. Extracting text...",
+                    flush=True
+                )
 
-                # Pass the storage file object, not .path
                 pages = extract_pdf_pages(
                     document.pdf_file
                 )
@@ -405,9 +535,11 @@ def home(request):
 
                     extracted_text += page["text"]
 
-                # Generate summary
+                # Generate AI summary
 
-                summary = generate_summary(extracted_text)
+                summary = generate_summary(
+                    extracted_text
+                )
 
                 print(
                     "AI SUMMARY RESULT:",
@@ -426,6 +558,7 @@ def home(request):
                 if summary and not summary.startswith(summary_errors):
 
                     document.is_summarized = True
+
                     document.summary_text = summary
 
                     document.save(
@@ -439,9 +572,12 @@ def home(request):
 
                     upload_error = summary
 
-                # Index PDF in ChromaDB
+                # Index PDF
 
-                print("Starting PDF indexing...", flush=True)
+                print(
+                    "Starting PDF indexing...",
+                    flush=True
+                )
 
                 count = store_pdf_chunks(
                     document.id,
@@ -460,7 +596,11 @@ def home(request):
 
                 upload_error = str(error)
 
-                print("PDF upload error:", repr(error), flush=True)
+                print(
+                    "PDF upload error:",
+                    repr(error),
+                    flush=True
+                )
 
                 document.delete()
 
@@ -501,7 +641,9 @@ def home(request):
             title__icontains=search_query
         )
 
-    status_filter = request.GET.get("status", "")
+    status_filter = request.GET.get(
+        "status", ""
+    )
 
     if status_filter == "summarized":
 
@@ -579,7 +721,6 @@ def chat_with_pdf(request, document_id):
                         flush=True
                     )
 
-                    # Pass storage file object, not .path
                     pages = extract_pdf_pages(
                         document.pdf_file
                     )
@@ -653,31 +794,49 @@ def download_summary(request, document_id):
 
     pdf = canvas.Canvas(buffer)
 
-    pdf.setTitle("AI Generated Summary")
+    pdf.setTitle(
+        "AI Generated Summary"
+    )
 
-    pdf.setFont("Helvetica-Bold", 16)
+    pdf.setFont(
+        "Helvetica-Bold",
+        16
+    )
 
     pdf.drawString(
-        50, 800,
+        50,
+        800,
         "DocuMind AI - Summary"
     )
 
-    pdf.setFont("Helvetica-Bold", 12)
+    pdf.setFont(
+        "Helvetica-Bold",
+        12
+    )
 
     pdf.drawString(
-        50, 770,
+        50,
+        770,
         document.title[:80]
     )
 
-    pdf.setFont("Helvetica", 10)
+    pdf.setFont(
+        "Helvetica",
+        10
+    )
 
-    text_object = pdf.beginText(50, 740)
+    text_object = pdf.beginText(
+        50,
+        740
+    )
 
     text_object.setLeading(15)
 
     for line in document.summary_text.splitlines():
 
-        text_object.textLine(line[:100])
+        text_object.textLine(
+            line[:100]
+        )
 
     pdf.drawText(text_object)
 
@@ -710,16 +869,21 @@ def delete_document(request, document_id):
     )
 
     try:
+
         delete_pdf_chunks(document.id)
 
     except Exception as error:
+
         print(
             "PDF index deletion error:",
             repr(error),
             flush=True
         )
 
-    document.pdf_file.delete(save=False)
+    document.pdf_file.delete(
+        save=False
+    )
+
     document.delete()
 
     return redirect("home")
@@ -733,7 +897,9 @@ def open_selected_chat(request):
 
     if request.method == "POST":
 
-        document_id = request.POST.get("document_id")
+        document_id = request.POST.get(
+            "document_id"
+        )
 
         if document_id:
 
