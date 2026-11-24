@@ -1,72 +1,92 @@
+import json
+import math
+import os
+import sqlite3
+from pathlib import Path
 
-import chromadb
 import requests
 from django.conf import settings
-from pathlib import Path
 from google import genai
-import os
 
 
 # --------------------------------
-# 1. Generate Embeddings using Ollama
+# 1. LIGHTWEIGHT SQLITE VECTOR STORE
+# --------------------------------
+
+DB_PATH = Path(settings.BASE_DIR) / "documind_vectors.sqlite3"
+
+
+def get_connection():
+    connection = sqlite3.connect(
+        str(DB_PATH),
+        timeout=30
+    )
+
+    connection.execute("""
+        CREATE TABLE IF NOT EXISTS pdf_chunks (
+            id TEXT PRIMARY KEY,
+            document_id TEXT NOT NULL,
+            page_number INTEGER NOT NULL,
+            chunk_index INTEGER NOT NULL,
+            text TEXT NOT NULL,
+            embedding TEXT NOT NULL
+        )
+    """)
+
+    connection.execute("""
+        CREATE INDEX IF NOT EXISTS idx_pdf_document
+        ON pdf_chunks(document_id)
+    """)
+
+    return connection
+
+
+# --------------------------------
+# 2. GENERATE EMBEDDINGS
 # --------------------------------
 
 def get_embedding(text):
 
-    try:
+    if os.getenv("RENDER", "False").lower() == "true":
 
-        if settings.IS_RENDER:
+        api_key = os.getenv("GEMINI_API_KEY")
 
-            client = genai.Client(
-                api_key=os.getenv("GEMINI_API_KEY")
-            )
+        if not api_key:
+            raise ValueError("GEMINI_API_KEY is missing.")
 
-            response = client.models.embed_content(
-                model="gemini-embedding-001",
-                contents=text
-            )
+        client = genai.Client(api_key=api_key)
 
-            return response.embeddings[0].values
+        response = client.models.embed_content(
+            model="gemini-embedding-001",
+            contents=text
+        )
 
-        else:
+        if not response.embeddings:
+            raise ValueError("Gemini returned no embedding.")
 
-            response = requests.post(
-                "http://localhost:11434/api/embeddings",
-                json={
-                    "model": "nomic-embed-text",
-                    "prompt": text
-                },
-                timeout=120
-            )
+        return list(response.embeddings[0].values)
 
-            response.raise_for_status()
+    response = requests.post(
+        "http://localhost:11434/api/embeddings",
+        json={
+            "model": "nomic-embed-text",
+            "prompt": text
+        },
+        timeout=120
+    )
 
-            return response.json()["embedding"]
+    response.raise_for_status()
 
-    except Exception as error:
+    embedding = response.json().get("embedding")
 
-        print("EMBEDDING ERROR:", repr(error), flush=True)
+    if not embedding:
+        raise ValueError("Ollama returned no embedding.")
 
-        return None
-
-
-# --------------------------------
-# 2. Create Persistent ChromaDB
-# --------------------------------
-
-CHROMA_PATH = Path(settings.BASE_DIR) / "chroma_db"
-
-client = chromadb.PersistentClient(
-    path=str(CHROMA_PATH)
-)
-
-collection = client.get_or_create_collection(
-    name="pdf_documents_gemini" if settings.IS_RENDER else "pdf_documents_ollama"
-)
+    return embedding
 
 
 # --------------------------------
-# 3. Split Text into Chunks
+# 3. SPLIT TEXT INTO SMALL CHUNKS
 # --------------------------------
 
 def split_text_into_chunks(
@@ -77,102 +97,151 @@ def split_text_into_chunks(
 
     chunks = []
 
-    start = 0
+    step = max(1, chunk_size - overlap)
 
-    while start < len(text):
+    for start in range(0, len(text), step):
 
-        end = start + chunk_size
-
-        chunk = text[start:end]
+        chunk = text[start:start + chunk_size]
 
         if chunk.strip():
             chunks.append(chunk)
-
-        start = end - overlap
 
     return chunks
 
 
 # --------------------------------
-# 4. Store PDF Chunks in ChromaDB
+# 4. DELETE OLD PDF INDEX
+# --------------------------------
+
+def delete_pdf_chunks(document_id):
+
+    connection = get_connection()
+
+    try:
+        connection.execute(
+            "DELETE FROM pdf_chunks WHERE document_id = ?",
+            (str(document_id),)
+        )
+
+        connection.commit()
+
+    finally:
+        connection.close()
+
+
+# --------------------------------
+# 5. STORE PDF CHUNKS
 # --------------------------------
 
 def store_pdf_chunks(document_id, pages):
 
-    print("Starting PDF indexing...", flush=True)
+    print("Starting lightweight PDF indexing...", flush=True)
 
-    # Remove old chunks for this document
-    collection.delete(
-        where={
-            "document_id": str(document_id)
-        }
-    )
+    connection = get_connection()
 
-    ids = []
-    documents = []
-    embeddings = []
-    metadatas = []
+    try:
 
-    for page in pages:
-
-        page_number = page["page_number"]
-
-        text = page["text"]
-
-        chunks = split_text_into_chunks(text)
-
-        for chunk_index, chunk in enumerate(chunks):
-
-            print(
-                f"Generating embedding: Page {page_number}, "
-                f"Chunk {chunk_index + 1}/{len(chunks)}",
-                flush=True
-            )
-
-            embedding = get_embedding(chunk)
-
-            if embedding is None:
-
-                raise ValueError(
-                    "Could not generate PDF embedding using Ollama."
-                )
-
-            ids.append(
-                f"doc_{document_id}_page_{page_number}_chunk_{chunk_index}"
-            )
-
-            documents.append(chunk)
-
-            embeddings.append(embedding)
-
-            metadatas.append({
-                "document_id": str(document_id),
-                "page_number": page_number,
-                "chunk_index": chunk_index
-            })
-
-    if ids:
-
-        print("Saving embeddings to ChromaDB...", flush=True)
-
-        collection.add(
-            ids=ids,
-            documents=documents,
-            embeddings=embeddings,
-            metadatas=metadatas
+        connection.execute(
+            "DELETE FROM pdf_chunks WHERE document_id = ?",
+            (str(document_id),)
         )
 
-    print(
-        "PDF indexing completed. Total chunks:",
-        len(ids),
-        flush=True
-    )
+        connection.commit()
 
-    return len(ids)
+        total_chunks = 0
+
+        for page in pages:
+
+            page_number = page["page_number"]
+            text = page["text"]
+
+            chunks = split_text_into_chunks(text)
+
+            for chunk_index, chunk in enumerate(chunks):
+
+                print(
+                    f"Embedding page {page_number}, "
+                    f"chunk {chunk_index + 1}/{len(chunks)}",
+                    flush=True
+                )
+
+                embedding = get_embedding(chunk)
+
+                row_id = (
+                    f"doc_{document_id}_"
+                    f"page_{page_number}_"
+                    f"chunk_{chunk_index}"
+                )
+
+                connection.execute(
+                    """
+                    INSERT INTO pdf_chunks
+                    (id, document_id, page_number,
+                     chunk_index, text, embedding)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        row_id,
+                        str(document_id),
+                        page_number,
+                        chunk_index,
+                        chunk,
+                        json.dumps(embedding)
+                    )
+                )
+
+                # Save each embedding immediately.
+                connection.commit()
+
+                total_chunks += 1
+
+        print(
+            "PDF indexing completed. Total chunks:",
+            total_chunks,
+            flush=True
+        )
+
+        return total_chunks
+
+    except Exception:
+
+        connection.execute(
+            "DELETE FROM pdf_chunks WHERE document_id = ?",
+            (str(document_id),)
+        )
+
+        connection.commit()
+
+        raise
+
+    finally:
+        connection.close()
 
 
 # --------------------------------
-# 5. Search Relevant PDF Chunks
+# 6. COSINE SIMILARITY
+# --------------------------------
+
+def cosine_similarity(vector_a, vector_b):
+
+    if len(vector_a) != len(vector_b):
+        return 0
+
+    dot_product = sum(
+        a * b for a, b in zip(vector_a, vector_b)
+    )
+
+    norm_a = math.sqrt(sum(a * a for a in vector_a))
+    norm_b = math.sqrt(sum(b * b for b in vector_b))
+
+    if norm_a == 0 or norm_b == 0:
+        return 0
+
+    return dot_product / (norm_a * norm_b)
+
+
+# --------------------------------
+# 7. SEARCH RELEVANT PDF CHUNKS
 # --------------------------------
 
 def search_pdf(document_id, question):
@@ -181,35 +250,52 @@ def search_pdf(document_id, question):
 
     question_embedding = get_embedding(question)
 
-    if question_embedding is None:
+    connection = get_connection()
 
-        raise ValueError(
-            "Could not generate question embedding using Ollama."
+    try:
+
+        rows = connection.execute(
+            """
+            SELECT text, page_number, embedding
+            FROM pdf_chunks
+            WHERE document_id = ?
+            """,
+            (str(document_id),)
+        ).fetchall()
+
+    finally:
+        connection.close()
+
+    scored_chunks = []
+
+    for text, page_number, stored_embedding in rows:
+
+        embedding = json.loads(stored_embedding)
+
+        score = cosine_similarity(
+            question_embedding,
+            embedding
         )
 
-    print("Searching ChromaDB...", flush=True)
+        scored_chunks.append({
+            "text": text,
+            "page_number": page_number,
+            "score": score
+        })
 
-    results = collection.query(
-        query_embeddings=[question_embedding],
-        n_results=5,
-        where={
-            "document_id": str(document_id)
-        }
+    scored_chunks.sort(
+        key=lambda item: item["score"],
+        reverse=True
     )
 
     relevant_chunks = []
 
-    if results["documents"] and results["documents"][0]:
+    for chunk in scored_chunks[:5]:
 
-        for text, metadata in zip(
-            results["documents"][0],
-            results["metadatas"][0]
-        ):
-
-            relevant_chunks.append({
-                "text": text,
-                "page_number": metadata["page_number"]
-            })
+        relevant_chunks.append({
+            "text": chunk["text"],
+            "page_number": chunk["page_number"]
+        })
 
     print(
         "Relevant chunks found:",
@@ -221,16 +307,26 @@ def search_pdf(document_id, question):
 
 
 # --------------------------------
-# 6. Check Whether PDF Is Indexed
+# 8. CHECK PDF INDEX STATUS
 # --------------------------------
 
 def is_pdf_indexed(document_id):
 
-    results = collection.get(
-        where={
-            "document_id": str(document_id)
-        },
-        limit=1
-    )
+    connection = get_connection()
 
-    return len(results["ids"]) > 0
+    try:
+
+        result = connection.execute(
+            """
+            SELECT 1
+            FROM pdf_chunks
+            WHERE document_id = ?
+            LIMIT 1
+            """,
+            (str(document_id),)
+        ).fetchone()
+
+        return result is not None
+
+    finally:
+        connection.close()

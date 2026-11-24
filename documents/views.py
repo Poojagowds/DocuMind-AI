@@ -4,12 +4,16 @@ from django.views.decorators.http import require_POST
 from django.http import HttpResponse
 
 from .models import PDFDocument, ChatMessage
-from .rag import store_pdf_chunks, search_pdf, is_pdf_indexed
+from .rag import (
+    store_pdf_chunks,
+    search_pdf,
+    is_pdf_indexed,
+    delete_pdf_chunks
+)
 
 import fitz
 import requests
 import os
-
 from google import genai
 from reportlab.pdfgen import canvas
 from io import BytesIO
@@ -35,75 +39,144 @@ def get_gemini_client():
 
 def generate_summary(text):
 
-    prompt = f"""
+    if not text or not text.strip():
+        return "No readable text was found in the PDF."
+
+    # Split document text into manageable sections.
+    sections = [
+        text[i:i + 6000]
+        for i in range(0, len(text), 6000)
+    ]
+
+    partial_summaries = []
+
+    try:
+
+        if os.getenv("RENDER", "False").lower() == "true":
+
+            client = get_gemini_client()
+
+            for index, section in enumerate(sections):
+
+                print(
+                    f"Generating summary for section "
+                    f"{index + 1}/{len(sections)}",
+                    flush=True
+                )
+
+                prompt = f"""
 You are a professional document summarisation assistant.
 
-Analyse the following document and provide:
+Summarise this section using simple English.
 
+Include:
+1. Main topic
+2. Important points
+3. Key information
+
+Document section:
+{section}
+"""
+
+                response = client.models.generate_content(
+                    model="gemini-3.8-flash",
+                    contents=prompt
+                )
+
+                result = (response.text or "").strip()
+
+                if not result:
+                    raise ValueError(
+                        "Gemini returned an empty summary."
+                    )
+
+                partial_summaries.append(result)
+
+            if len(partial_summaries) == 1:
+                return partial_summaries[0]
+
+            final_prompt = f"""
+Combine the following section summaries into one
+complete and clear PDF summary.
+
+Use these headings:
 1. Main Topic
 2. Short Overview
 3. Important Points
 4. Key Information
 5. Conclusion
 
-Use simple English and clear bullet points.
+Use simple English and bullet points.
 
-Document:
-{text}
+Section summaries:
+{chr(10).join(partial_summaries)}
 """
 
-    if os.getenv("RENDER", "False").lower() == "true":
-
-        try:
-            client = get_gemini_client()
-
-            print("Starting Gemini summary...", flush=True)
-
-            response = client.models.generate_content(
+            final_response = client.models.generate_content(
                 model="gemini-3.8-flash",
-                contents=prompt
+                contents=final_prompt
             )
 
-            summary = (response.text or "").strip()
+            summary = (final_response.text or "").strip()
 
             if not summary:
-                return "AI service returned an empty response."
+                raise ValueError(
+                    "Gemini returned an empty final summary."
+                )
 
             print("Gemini summary completed!", flush=True)
 
             return summary
 
-        except Exception as error:
-            print("Gemini summary error:", repr(error), flush=True)
+        # Local Ollama summary
+        for section in sections:
 
-            return "Gemini is temporarily unavailable. Please try again later."
+            prompt = f"""
+Summarise this document section in simple English.
+Include the main topic and important points.
 
-    # Local Ollama
+Document:
+{section}
+"""
 
-    try:
+            response = requests.post(
+                "http://localhost:11434/api/generate",
+                json={
+                    "model": "llama3.2:3b",
+                    "prompt": prompt,
+                    "stream": False
+                },
+                timeout=300
+            )
 
-        response = requests.post(
-            "http://localhost:11434/api/generate",
-            json={
-                "model": "llama3.2:3b",
-                "prompt": prompt,
-                "stream": False
-            },
-            timeout=300
+            response.raise_for_status()
+
+            result = response.json().get(
+                "response", ""
+            ).strip()
+
+            if not result:
+                raise ValueError(
+                    "Ollama returned an empty summary."
+                )
+
+            partial_summaries.append(result)
+
+        return "\n\n".join(partial_summaries)
+
+    except Exception as error:
+
+        print(
+            "AI summary error:",
+            repr(error),
+            flush=True
         )
 
-        response.raise_for_status()
-
-        summary = response.json().get("response", "").strip()
-
-        if not summary:
-            return "AI service returned an empty response."
-
-        return summary
-
-    except requests.exceptions.RequestException as error:
-
-        print("Ollama summary error:", repr(error), flush=True)
+        if os.getenv("RENDER", "False").lower() == "true":
+            return (
+                "Gemini is temporarily unavailable. "
+                "Please try again later."
+            )
 
         return "Unable to generate summary. Please check Ollama."
 
@@ -637,25 +710,16 @@ def delete_document(request, document_id):
     )
 
     try:
-
-        from .rag import collection
-
-        collection.delete(
-            where={
-                "document_id": str(document.id)
-            }
-        )
+        delete_pdf_chunks(document.id)
 
     except Exception as error:
-
         print(
-            "ChromaDB deletion error:",
+            "PDF index deletion error:",
             repr(error),
             flush=True
         )
 
     document.pdf_file.delete(save=False)
-
     document.delete()
 
     return redirect("home")
