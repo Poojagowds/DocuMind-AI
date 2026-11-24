@@ -60,7 +60,7 @@ Document:
             print("Starting Gemini summary...", flush=True)
 
             response = client.models.generate_content(
-                model="gemini-2.5-flash",
+                model="gemini-3.8-flash",
                 contents=prompt
             )
 
@@ -228,7 +228,7 @@ Answer:
             print("Generating Gemini answer...", flush=True)
 
             response = client.models.generate_content(
-                model="gemini-2.5-flash",
+                model="gemini-3.8-flash",
                 contents=prompt
             )
 
